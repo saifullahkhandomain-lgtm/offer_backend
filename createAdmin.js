@@ -20,8 +20,8 @@ const createDefaultAdmin = async () => {
     // Create default admin
     const admin = await Admin.create({
       name: "ClickOfferz Admin",
-      email: "admin@clickofferz.com",
-      password: "Admin@123",
+      email: "sameer@clickofferz.com",
+      password: "sameer@123",
       role: "super-admin",
     });
 
