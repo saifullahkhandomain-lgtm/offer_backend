@@ -47,4 +47,11 @@ const CouponSchema = new mongoose.Schema({
     timestamps: true
 });
 
+CouponSchema.index({ isActive: 1, createdAt: -1 });
+CouponSchema.index({ storeId: 1, isActive: 1 });
+CouponSchema.index({ storeName: 1, isActive: 1 });
+CouponSchema.index({ category: 1, isActive: 1 });
+CouponSchema.index({ isTrending: 1, isActive: 1 });
+CouponSchema.index({ title: 'text', storeName: 'text', description: 'text' });
+
 module.exports = mongoose.model('Coupon', CouponSchema);

@@ -10,7 +10,7 @@ const siteSettingSchema = new mongoose.Schema({
         linkedin: { type: String, default: '' }
     },
     general: {
-        siteName: { type: String, default: 'ClickOfferz' },
+        siteName: { type: String, default: 'GrabYourPromos' },
         contactEmail: { type: String, default: '' }
     },
     lastUpdatedBy: {

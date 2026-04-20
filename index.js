@@ -9,6 +9,8 @@ const Category = require("./models/Category");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const { getCache, setCache, invalidateCache } = require("./utils/cache");
+
 // Middleware - CORS configuration
 app.use(
   cors({
@@ -32,7 +34,7 @@ app.use(async (req, res, next) => {
 // Routes
 app.get("/", (req, res) => {
   res.json({
-    message: "ClickOfferz API is running",
+    message: "GrabYourPromos API is running",
     database: "MongoDB",
   });
 });
@@ -40,23 +42,39 @@ app.get("/", (req, res) => {
 // Public API Routes
 app.get("/api/stores", async (req, res) => {
   try {
-    const stores = await Store.find().sort({ name: 1 }).lean();
+    const cached = getCache("stores");
+    if (cached) {
+      res.set("Cache-Control", "public, max-age=300, stale-while-revalidate=60");
+      return res.json(cached);
+    }
 
-    // Populate specific offer counts
-    const storesWithCounts = await Promise.all(
-      stores.map(async (store) => {
-        const count = await Coupon.countDocuments({
-          $or: [
-            { storeId: store._id },
-            { storeName: store.name },
-            { storeName: new RegExp(`^${store.name.trim()}$`, "i") },
-          ],
-          isActive: true,
-        });
-        return { ...store, offers: count };
-      }),
-    );
+    const [stores, activeCoupons] = await Promise.all([
+      Store.find().sort({ name: 1 }).lean(),
+      Coupon.find({ isActive: true }, { storeId: 1, storeName: 1 }).lean(),
+    ]);
 
+    // Build count maps in JS — 2 queries instead of N+1
+    const idCountMap = new Map();
+    const nameCountMap = new Map();
+    activeCoupons.forEach((c) => {
+      if (c.storeId) {
+        const k = c.storeId.toString();
+        idCountMap.set(k, (idCountMap.get(k) || 0) + 1);
+      }
+      if (c.storeName) {
+        const k = c.storeName.toLowerCase().trim();
+        nameCountMap.set(k, (nameCountMap.get(k) || 0) + 1);
+      }
+    });
+
+    const storesWithCounts = stores.map((store) => {
+      const byId = idCountMap.get(store._id.toString()) || 0;
+      const byName = nameCountMap.get(store.name.toLowerCase().trim()) || 0;
+      return { ...store, offers: Math.max(byId, byName) };
+    });
+
+    setCache("stores", storesWithCounts);
+    res.set("Cache-Control", "public, max-age=300, stale-while-revalidate=60");
     res.json(storesWithCounts);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -66,9 +84,20 @@ app.get("/api/stores", async (req, res) => {
 app.get("/api/stores/:slug", async (req, res) => {
   try {
     const slug = req.params.slug;
-    const stores = await Store.find();
+    const cacheKey = `store:${slug}`;
+    const cached = getCache(cacheKey);
+    if (cached) {
+      res.set("Cache-Control", "public, max-age=300, stale-while-revalidate=60");
+      return res.json(cached);
+    }
 
-    const store = stores.find(
+    // Convert slug back to approximate name for a targeted DB query
+    const approxName = slug.replace(/-/g, " ");
+    const candidates = await Store.find({
+      name: new RegExp(approxName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"),
+    }).lean();
+
+    const store = candidates.find(
       (s) => s.name.trim().toLowerCase().replace(/\s+/g, "-") === slug,
     );
 
@@ -76,6 +105,8 @@ app.get("/api/stores/:slug", async (req, res) => {
       return res.status(404).json({ error: "Store not found" });
     }
 
+    setCache(cacheKey, store);
+    res.set("Cache-Control", "public, max-age=300, stale-while-revalidate=60");
     res.json(store);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -99,12 +130,14 @@ app.get("/api/coupons", async (req, res) => {
     }
 
     if (store) {
-      // Robust store search: matches storeId, exact name, or fuzzy name
-      const stores = await Store.find();
-      const targetStore = stores.find(
-        (s) =>
-          s.name.trim().toLowerCase().replace(/\s+/g, "-") ===
-          store.trim().toLowerCase().replace(/\s+/g, "-"),
+      // Targeted store lookup — avoids fetching all stores
+      const approxName = store.trim().toLowerCase().replace(/-/g, " ");
+      const candidates = await Store.find({
+        name: new RegExp(approxName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"),
+      }).lean();
+      const targetSlug = store.trim().toLowerCase().replace(/\s+/g, "-");
+      const targetStore = candidates.find(
+        (s) => s.name.trim().toLowerCase().replace(/\s+/g, "-") === targetSlug,
       );
 
       if (targetStore) {
@@ -161,10 +194,11 @@ app.get("/api/coupons", async (req, res) => {
 app.get("/api/coupons/store/:slug", async (req, res) => {
   try {
     const slug = req.params.slug;
-    const stores = await Store.find();
-
-    // Robustly find the store using the same slug logic as frontend
-    const store = stores.find(
+    const approxName = slug.replace(/-/g, " ");
+    const candidates = await Store.find({
+      name: new RegExp(approxName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"),
+    }).lean();
+    const store = candidates.find(
       (s) => s.name.trim().toLowerCase().replace(/\s+/g, "-") === slug,
     );
 
@@ -254,21 +288,28 @@ app.use("/", require("./routes/sitemapRoutes"));
 // Get all active categories (public)
 app.get("/api/categories", async (req, res) => {
   try {
-    const categories = await Category.find({ isActive: true })
-      .sort({ name: 1 })
-      .lean();
+    const cached = getCache("categories");
+    if (cached) {
+      res.set("Cache-Control", "public, max-age=300, stale-while-revalidate=60");
+      return res.json(cached);
+    }
 
-    // Populate coupon counts for each category
-    const categoriesWithCounts = await Promise.all(
-      categories.map(async (cat) => {
-        const count = await Coupon.countDocuments({
-          category: new RegExp(`^${cat.name}$`, "i"),
-          isActive: true,
-        });
-        return { ...cat, couponCount: count };
-      }),
-    );
+    const [categories, couponCounts] = await Promise.all([
+      Category.find({ isActive: true }).sort({ name: 1 }).lean(),
+      Coupon.aggregate([
+        { $match: { isActive: true, category: { $exists: true, $ne: "" } } },
+        { $group: { _id: { $toLower: { $trim: { input: "$category" } } }, count: { $sum: 1 } } },
+      ]),
+    ]);
 
+    const countMap = new Map(couponCounts.map((c) => [c._id, c.count]));
+    const categoriesWithCounts = categories.map((cat) => ({
+      ...cat,
+      couponCount: countMap.get(cat.name.toLowerCase().trim()) || 0,
+    }));
+
+    setCache("categories", categoriesWithCounts);
+    res.set("Cache-Control", "public, max-age=300, stale-while-revalidate=60");
     res.json(categoriesWithCounts);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -302,6 +343,7 @@ app.post(
           : null,
       });
       const category = await Category.create(req.body);
+      invalidateCache("categories");
       res.status(201).json(category);
     } catch (error) {
       console.error("Create category error:", error);
@@ -330,6 +372,7 @@ app.put(
       if (!category) {
         return res.status(404).json({ error: "Category not found" });
       }
+      invalidateCache("categories");
       res.json(category);
     } catch (error) {
       console.error("Update category error:", error);
@@ -348,6 +391,7 @@ app.delete(
       if (!category) {
         return res.status(404).json({ error: "Category not found" });
       }
+      invalidateCache("categories");
       res.json({ message: "Category deleted successfully" });
     } catch (error) {
       res.status(500).json({ error: error.message });

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Store = require('../models/Store');
 const { protect } = require('../middleware/auth');
+const { invalidateCache } = require('../utils/cache');
 
 // @route   GET /api/admin/stores
 // @desc    Get all stores (for admin)
@@ -25,6 +26,7 @@ router.get('/', protect, async (req, res) => {
 router.post('/', protect, async (req, res) => {
     try {
         const store = await Store.create(req.body);
+        invalidateCache('stores');
         res.status(201).json({
             success: true,
             data: store
@@ -48,6 +50,7 @@ router.put('/:id', protect, async (req, res) => {
             return res.status(404).json({ error: 'Store not found' });
         }
 
+        invalidateCache('stores', `store:${store.name.trim().toLowerCase().replace(/\s+/g, '-')}`);
         res.json({
             success: true,
             data: store
@@ -68,6 +71,7 @@ router.delete('/:id', protect, async (req, res) => {
             return res.status(404).json({ error: 'Store not found' });
         }
 
+        invalidateCache('stores', `store:${store.name.trim().toLowerCase().replace(/\s+/g, '-')}`);
         res.json({
             success: true,
             data: {}

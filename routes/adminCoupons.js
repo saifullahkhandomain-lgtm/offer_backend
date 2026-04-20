@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Coupon = require('../models/Coupon');
 const { protect } = require('../middleware/auth');
+const { invalidateCache } = require('../utils/cache');
 
 // @route   GET /api/admin/coupons
 // @desc    Get all coupons (for admin)
@@ -45,6 +46,7 @@ router.get('/:id', protect, async (req, res) => {
 router.post('/', protect, async (req, res) => {
     try {
         const coupon = await Coupon.create(req.body);
+        invalidateCache('stores', 'categories');
         res.status(201).json({
             success: true,
             data: coupon
@@ -68,6 +70,7 @@ router.put('/:id', protect, async (req, res) => {
             return res.status(404).json({ error: 'Coupon not found' });
         }
 
+        invalidateCache('stores', 'categories');
         res.json({
             success: true,
             data: coupon
@@ -88,6 +91,7 @@ router.delete('/:id', protect, async (req, res) => {
             return res.status(404).json({ error: 'Coupon not found' });
         }
 
+        invalidateCache('stores', 'categories');
         res.json({
             success: true,
             data: {}
